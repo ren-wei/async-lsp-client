@@ -16,7 +16,7 @@ use tokio::{
     },
 };
 use tower_lsp::{
-    jsonrpc::{Id, Request, Response},
+    jsonrpc::{self, Id, Request, Response},
     lsp_types::{
         notification::{Initialized, Notification},
         InitializeParams, InitializeResult, ServerCapabilities,
@@ -128,6 +128,19 @@ impl LspClient {
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": result,
+            }),
+            &mut stdin,
+        )
+        .await;
+    }
+
+    pub async fn send_error_response(&mut self, id: Id, error: jsonrpc::Error) {
+        let mut stdin = self.stdin.write().await;
+        send_message(
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": error,
             }),
             &mut stdin,
         )
