@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use cancellation::CancellationToken;
 use message::{send_message, Message};
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::{
     process::{ChildStdin, ChildStdout},
     sync::{
@@ -18,15 +18,16 @@ use tokio::{
 use tower_lsp::{
     jsonrpc::{self, Id, Request, Response},
     lsp_types::{
-        notification::{Initialized, Notification},
-        InitializeParams, InitializeResult, ServerCapabilities,
+        self,
+        notification::{Exit, Initialized},
+        request::{Initialize, Shutdown},
+        InitializeParams, InitializeResult, InitializedParams,
     },
 };
 
 /// Async LSP client
 pub struct LspClient {
     count: i64,
-    initialize_result: InitializeResult,
     state: ClientState,
     stdin: Arc<RwLock<ChildStdin>>,
     channel_map: Arc<RwLock<HashMap<Id, Sender<Response>>>>,
@@ -44,7 +45,6 @@ impl LspClient {
         tokio::spawn(async move { message_loop(&mut stdout, channel_map_copy, queue_copy).await });
         LspClient {
             count: 0,
-            initialize_result: InitializeResult::default(),
             state: ClientState::Uninitialized,
             stdin: Arc::new(RwLock::new(stdin)),
             channel_map,
@@ -52,18 +52,13 @@ impl LspClient {
         }
     }
 
-    pub async fn initialize(&mut self, params: InitializeParams) {
+    pub async fn initialize(&mut self, params: InitializeParams) -> InitializeResult {
         self.state = ClientState::Initializing;
-        let response = self.send_request("initialize", json!(params)).await;
+        let initialize_result = self.send_request::<Initialize>(params).await;
         self.state = ClientState::Initialized;
-        let initialize_result: InitializeResult =
-            serde_json::from_value(response.result().unwrap().clone()).unwrap();
-        self.initialize_result = initialize_result;
-        self.send_notification(Initialized::METHOD, json!({})).await;
-    }
-
-    pub fn server_capabilities(&self) -> &ServerCapabilities {
-        &self.initialize_result.capabilities
+        self.send_notification::<Initialized>(InitializedParams {})
+            .await;
+        initialize_result
     }
 
     pub async fn process_message(&mut self) -> Option<ServerMessage> {
@@ -71,14 +66,17 @@ impl LspClient {
         queue.pop()
     }
 
-    pub async fn send_request(&mut self, method: &str, params: Value) -> Response {
+    pub async fn send_request<R>(&mut self, params: R::Params) -> R::Result
+    where
+        R: lsp_types::request::Request,
+    {
         self.count += 1;
         let mut stdin = self.stdin.write().await;
         send_message(
             json!({
                 "jsonrpc": "2.0",
                 "id": self.count,
-                "method": method,
+                "method": R::METHOD,
                 "params": params
             }),
             &mut stdin,
@@ -118,10 +116,13 @@ impl LspClient {
         token.finish();
         cancel.abort();
 
-        response
+        serde_json::from_value(response.result().unwrap().to_owned()).unwrap()
     }
 
-    pub async fn send_response(&mut self, id: Id, result: Option<Value>) {
+    pub async fn send_response<R>(&mut self, id: Id, result: R::Result)
+    where
+        R: lsp_types::request::Request,
+    {
         let mut stdin = self.stdin.write().await;
         send_message(
             json!({
@@ -147,12 +148,15 @@ impl LspClient {
         .await;
     }
 
-    pub async fn send_notification(&mut self, method: &str, params: Value) {
+    pub async fn send_notification<N>(&mut self, params: N::Params)
+    where
+        N: lsp_types::notification::Notification,
+    {
         let mut stdin = self.stdin.write().await;
         send_message(
             json!({
                 "jsonrpc": "2.0",
-                "method": method,
+                "method": N::METHOD,
                 "params": params
             }),
             &mut stdin,
@@ -161,12 +165,12 @@ impl LspClient {
     }
 
     pub async fn shutdown(&mut self) {
-        self.send_request("shutdown", Value::Null).await;
+        self.send_request::<Shutdown>(()).await;
         self.state = ClientState::ShutDown;
     }
 
     pub async fn exit(&mut self) {
-        self.send_notification("exit", Value::Null).await;
+        self.send_notification::<Exit>(()).await;
         self.state = ClientState::Exited;
     }
 }
