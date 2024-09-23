@@ -27,8 +27,9 @@ use tower_lsp::{
 };
 
 /// Async LSP client
+#[derive(Clone)]
 pub struct LspClient {
-    count: i64,
+    count: Arc<RwLock<i64>>,
     state: ClientState,
     stdin: Arc<RwLock<ChildStdin>>,
     channel_map: Arc<RwLock<HashMap<Id, Sender<Response>>>>,
@@ -60,7 +61,7 @@ impl LspClient {
         tokio::spawn(async move { message_loop(&mut stdout, channel_map_, tx).await });
         (
             LspClient {
-                count: 0,
+                count: Arc::new(RwLock::new(0)),
                 state: ClientState::Uninitialized,
                 stdin: Arc::new(RwLock::new(stdin)),
                 channel_map,
@@ -78,16 +79,18 @@ impl LspClient {
         initialize_result
     }
 
-    pub async fn send_request<R>(&mut self, params: R::Params) -> R::Result
+    pub async fn send_request<R>(&self, params: R::Params) -> R::Result
     where
         R: lsp_types::request::Request,
     {
-        self.count += 1;
+        let mut count = self.count.write().await;
+        *count += 1;
+        let id = *count;
         let mut stdin = self.stdin.write().await;
         send_message(
             json!({
                 "jsonrpc": "2.0",
-                "id": self.count,
+                "id": id,
                 "method": R::METHOD,
                 "params": params
             }),
@@ -99,7 +102,6 @@ impl LspClient {
         let notify = Arc::new(Notify::new());
         let mut token = CancellationToken::new(Arc::clone(&notify));
         let stdin = Arc::clone(&self.stdin);
-        let count = self.count;
         let cancel = tokio::spawn(async move {
             let mut stdin = stdin.write().await;
             notify.notified().await;
@@ -108,7 +110,7 @@ impl LspClient {
                     "jsonrpc": "2.0",
                     "method": "$/cancelRequest",
                     "params": {
-                        "id": count,
+                        "id": id,
                     }
                 }),
                 &mut stdin,
@@ -118,10 +120,7 @@ impl LspClient {
 
         let (tx, mut rx) = mpsc::channel::<Response>(1);
 
-        self.channel_map
-            .write()
-            .await
-            .insert(Id::Number(self.count), tx);
+        self.channel_map.write().await.insert(Id::Number(id), tx);
 
         let response = rx.recv().await.unwrap();
 
@@ -131,7 +130,7 @@ impl LspClient {
         serde_json::from_value(response.result().unwrap().to_owned()).unwrap()
     }
 
-    pub async fn send_response<R>(&mut self, id: Id, result: R::Result)
+    pub async fn send_response<R>(&self, id: Id, result: R::Result)
     where
         R: lsp_types::request::Request,
     {
@@ -147,7 +146,7 @@ impl LspClient {
         .await;
     }
 
-    pub async fn send_error_response(&mut self, id: Id, error: jsonrpc::Error) {
+    pub async fn send_error_response(&self, id: Id, error: jsonrpc::Error) {
         let mut stdin = self.stdin.write().await;
         send_message(
             json!({
@@ -160,7 +159,7 @@ impl LspClient {
         .await;
     }
 
-    pub async fn send_notification<N>(&mut self, params: N::Params)
+    pub async fn send_notification<N>(&self, params: N::Params)
     where
         N: lsp_types::notification::Notification,
     {
@@ -216,6 +215,7 @@ async fn message_loop(
     }
 }
 
+#[derive(Clone, Copy)]
 enum ClientState {
     /// Server has not received an `initialize` request.
     Uninitialized = 0,
