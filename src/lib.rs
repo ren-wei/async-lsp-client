@@ -28,15 +28,15 @@ use tower_lsp::{
 
 /// Async LSP client
 #[derive(Clone)]
-pub struct LspClient {
+pub struct LspServer {
     count: Arc<RwLock<i64>>,
     state: ClientState,
     stdin: Arc<RwLock<ChildStdin>>,
     channel_map: Arc<RwLock<HashMap<Id, Sender<Response>>>>,
 }
 
-impl LspClient {
-    pub fn new<S, I>(program: S, args: I) -> (LspClient, Receiver<ServerMessage>)
+impl LspServer {
+    pub fn new<S, I>(program: S, args: I) -> (LspServer, Receiver<ServerMessage>)
     where
         S: AsRef<OsStr>,
         I: IntoIterator<Item = S>,
@@ -60,7 +60,7 @@ impl LspClient {
 
         tokio::spawn(async move { message_loop(&mut stdout, channel_map_, tx).await });
         (
-            LspClient {
+            LspServer {
                 count: Arc::new(RwLock::new(0)),
                 state: ClientState::Uninitialized,
                 stdin: Arc::new(RwLock::new(stdin)),
