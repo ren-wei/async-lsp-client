@@ -2,16 +2,17 @@ mod cancellation;
 mod message;
 
 pub use message::NotificationMessage;
+use tracing::warn;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ffi::OsStr, process::Stdio, sync::Arc};
 
 use cancellation::CancellationToken;
 use message::{send_message, Message};
 use serde_json::json;
 use tokio::{
-    process::{ChildStdin, ChildStdout},
+    process::{ChildStdin, ChildStdout, Command},
     sync::{
-        mpsc::{self, Sender},
+        mpsc::{self, Receiver, Sender},
         Notify, RwLock,
     },
 };
@@ -31,25 +32,41 @@ pub struct LspClient {
     state: ClientState,
     stdin: Arc<RwLock<ChildStdin>>,
     channel_map: Arc<RwLock<HashMap<Id, Sender<Response>>>>,
-    queue: Arc<RwLock<Vec<ServerMessage>>>,
 }
 
 impl LspClient {
-    pub fn new(stdin: ChildStdin, mut stdout: ChildStdout) -> LspClient {
+    pub fn new<S, I>(program: S, args: I) -> (LspClient, Receiver<ServerMessage>)
+    where
+        S: AsRef<OsStr>,
+        I: IntoIterator<Item = S>,
+    {
+        let child = match Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+        {
+            Err(err) => panic!("Couldn't spawn: {:?}", err),
+            Ok(child) => child,
+        };
+        let stdin = child.stdin.unwrap();
+        let mut stdout = child.stdout.unwrap();
+
         let channel_map = Arc::new(RwLock::new(HashMap::<Id, Sender<Response>>::new()));
-        let channel_map_copy = Arc::clone(&channel_map);
+        let channel_map_ = Arc::clone(&channel_map);
 
-        let queue = Arc::new(RwLock::new(vec![]));
-        let queue_copy = Arc::clone(&queue);
+        let (tx, rx) = mpsc::channel(16);
 
-        tokio::spawn(async move { message_loop(&mut stdout, channel_map_copy, queue_copy).await });
-        LspClient {
-            count: 0,
-            state: ClientState::Uninitialized,
-            stdin: Arc::new(RwLock::new(stdin)),
-            channel_map,
-            queue,
-        }
+        tokio::spawn(async move { message_loop(&mut stdout, channel_map_, tx).await });
+        (
+            LspClient {
+                count: 0,
+                state: ClientState::Uninitialized,
+                stdin: Arc::new(RwLock::new(stdin)),
+                channel_map,
+            },
+            rx,
+        )
     }
 
     pub async fn initialize(&mut self, params: InitializeParams) -> InitializeResult {
@@ -59,11 +76,6 @@ impl LspClient {
         self.send_notification::<Initialized>(InitializedParams {})
             .await;
         initialize_result
-    }
-
-    pub async fn process_message(&mut self) -> Option<ServerMessage> {
-        let mut queue = self.queue.write().await;
-        queue.pop()
     }
 
     pub async fn send_request<R>(&mut self, params: R::Params) -> R::Result
@@ -178,24 +190,25 @@ impl LspClient {
 async fn message_loop(
     stdout: &mut ChildStdout,
     channel_map: Arc<RwLock<HashMap<Id, Sender<Response>>>>,
-    queue: Arc<RwLock<Vec<ServerMessage>>>,
+    tx: Sender<ServerMessage>,
 ) {
     loop {
         let msg = message::get_message(stdout).await;
         match msg {
             Message::Notification(msg) => {
-                let mut queue = queue.write().await;
-                queue.insert(0, ServerMessage::Notification(msg));
+                tx.send(ServerMessage::Notification(msg)).await.unwrap();
             }
             Message::Request(req) => {
-                let mut queue = queue.write().await;
-                queue.insert(0, ServerMessage::Request(req));
+                tx.send(ServerMessage::Request(req)).await.unwrap();
             }
             Message::Response(res) => {
                 let mut channel_map = channel_map.write().await;
                 let id = res.id().clone();
                 if let Some(tx) = channel_map.get(&id) {
-                    tx.send(res).await.unwrap();
+                    let result = tx.send(res).await;
+                    if let Err(err) = result {
+                        warn!("send error: {:?}", err);
+                    }
                     channel_map.remove(&id);
                 }
             }
