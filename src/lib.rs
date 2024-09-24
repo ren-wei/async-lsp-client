@@ -26,11 +26,13 @@ use tower_lsp::{
     },
 };
 
-/// Async LSP client
+/// The client used to connect to the LSP server,
+/// and after the connection is completed,
+/// the access to the LSP server is abstracted as a method call
 #[derive(Clone)]
 pub struct LspServer {
     count: Arc<RwLock<i64>>,
-    state: ClientState,
+    state: Arc<RwLock<ClientState>>,
     stdin: Arc<RwLock<ChildStdin>>,
     channel_map: Arc<RwLock<HashMap<Id, Sender<Response>>>>,
 }
@@ -62,7 +64,7 @@ impl LspServer {
         (
             LspServer {
                 count: Arc::new(RwLock::new(0)),
-                state: ClientState::Uninitialized,
+                state: Arc::new(RwLock::new(ClientState::Uninitialized)),
                 stdin: Arc::new(RwLock::new(stdin)),
                 channel_map,
             },
@@ -70,13 +72,16 @@ impl LspServer {
         )
     }
 
-    pub async fn initialize(&mut self, params: InitializeParams) -> InitializeResult {
-        self.state = ClientState::Initializing;
+    pub async fn initialize(&self, params: InitializeParams) -> InitializeResult {
+        *self.state.write().await = ClientState::Initializing;
         let initialize_result = self.send_request::<Initialize>(params).await;
-        self.state = ClientState::Initialized;
+        initialize_result
+    }
+
+    pub async fn initialized(&self) {
         self.send_notification::<Initialized>(InitializedParams {})
             .await;
-        initialize_result
+        *self.state.write().await = ClientState::Initialized;
     }
 
     pub async fn send_request<R>(&self, params: R::Params) -> R::Result
@@ -175,14 +180,14 @@ impl LspServer {
         .await;
     }
 
-    pub async fn shutdown(&mut self) {
+    pub async fn shutdown(&self) {
         self.send_request::<Shutdown>(()).await;
-        self.state = ClientState::ShutDown;
+        *self.state.write().await = ClientState::ShutDown;
     }
 
-    pub async fn exit(&mut self) {
+    pub async fn exit(&self) {
         self.send_notification::<Exit>(()).await;
-        self.state = ClientState::Exited;
+        *self.state.write().await = ClientState::Exited;
     }
 }
 
@@ -206,7 +211,9 @@ async fn message_loop(
                 if let Some(tx) = channel_map.get(&id) {
                     let result = tx.send(res).await;
                     if let Err(err) = result {
-                        warn!("send error: {:?}", err);
+                        if cfg!(feature = "tracing") {
+                            warn!("send error: {:?}", err);
+                        }
                     }
                     channel_map.remove(&id);
                 }
