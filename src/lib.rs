@@ -1,3 +1,89 @@
+//! # LspServer
+//!
+//! The client used to connect to the LSP server,
+//! and after the connection is completed,
+//! the access to the LSP server is abstracted as a method call
+//!
+//! ## Lifecycle Message
+//!
+//! ```
+//! let (server, rx) = LspServer::new("deno", ["lsp"]);
+//! // initialize request
+//! let initializeResult = server.initialize(initializeParams).await;
+//! // initialized notification
+//! server.initialized();
+//! // shutdown request
+//! server.shutdown();
+//! // exit notification
+//! server.exit();
+//! ```
+//!
+//! ## Document Synchronization
+//! ```rust
+//! DidOpenTextDocument
+//! server.send_notification::<DidOpenTextDocument>(DidOpenTextDocumentParams { ... }).await;
+//! // DidChangeTextDocument
+//! server.send_notification::<DidChangeTextDocument>(DidChangeTextDocumentParams { ... }).await;
+//! // DidCloseTextDocument
+//! server.send_notification::<DidCloseTextDocument>(DidCloseTextDocumentParams { ... }).await;
+//! // other
+//! ```
+//! ## Language Features
+//!
+//! ```rust
+//! // hover
+//! server.send_request::<HoverRequest>(HoverParams { ... }).await;
+//! // completion
+//! server.send_request::<Completion>(CompletionParams { ... }).await;
+//! // goto definition
+//! server.send_request::<GotoDefinition>(GotoDefinitionParams { ... }).await;
+//! // other
+//! ```
+//!
+//! ## Receive requests and notifications from the server
+//!
+//! The `rx` is used to receive messages from the server. Usually, the message is received in another thread.
+//!
+//! ```rust
+//! let server_ = server.clone(); // Clone the server is used to move.
+//! tokio::spawn(async move {
+//!     loop {
+//!         let message = rx.recv().await.unwrap();
+//!         // Process messages
+//!         match message {
+//!             ServerMessage::Notification(_) => {},
+//!             // For requests, you need to send a response
+//!             ServerMessage::Request(req) => {
+//!                 let id = req.id().unwrap().clone();
+//!                 match req.method() {
+//!                     WorkspaceConfiguration::METHOD => {
+//!                         server_.send_response::<WorkspaceConfiguration>(id, vec![])
+//!                             .await
+//!                     }
+//!                     WorkDoneProgressCreate::METHOD => {
+//!                         server_
+//!                             .send_response::<WorkDoneProgressCreate>(id, ())
+//!                             .await;
+//!                     }
+//!                     _ => {
+//!                         server_
+//!                             .send_error_response(
+//!                                 id,
+//!                                 jsonrpc::Error {
+//!                                     code: jsonrpc::ErrorCode::MethodNotFound,
+//!                                     message: std::borrow::Cow::Borrowed("Method Not Found"),
+//!                                     data: req.params().cloned(),
+//!                                 },
+//!                             )
+//!                             .await;
+//!                     }
+//!                 }
+//!             }
+//!         }
+//!     }
+//! });
+//! ```
+
 mod cancellation;
 mod message;
 
@@ -26,9 +112,6 @@ use tower_lsp::{
     },
 };
 
-/// The client used to connect to the LSP server,
-/// and after the connection is completed,
-/// the access to the LSP server is abstracted as a method call
 #[derive(Clone)]
 pub struct LspServer {
     count: Arc<RwLock<i64>>,
