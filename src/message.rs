@@ -40,7 +40,9 @@ pub async fn get_message(stdout: &mut ChildStdout) -> Message {
     stdout.read_exact(&mut body).await.unwrap();
 
     let value: Map<String, Value> = serde_json::from_slice(&body).unwrap();
-    debug!("<==== {}", String::from_utf8(body).unwrap());
+    if cfg!(feature = "tracing") {
+        debug!("<==== {}", String::from_utf8(body).unwrap());
+    }
     if value.contains_key("method") {
         if value.contains_key("id") {
             let request: Request = serde_json::from_value(Value::Object(value)).unwrap();
@@ -58,7 +60,9 @@ pub async fn get_message(stdout: &mut ChildStdout) -> Message {
 
 pub async fn send_message(message: Value, stdin: &mut ChildStdin) {
     let request_str = message.to_string();
-    debug!("====> {}", request_str);
+    if cfg!(feature = "tracing") {
+        debug!("====> {}", request_str);
+    }
     let content_length = request_str.len();
     let content = format!("Content-Length: {}\r\n\r\n{}", content_length, request_str);
     stdin.write_all(content.as_bytes()).await.unwrap();
