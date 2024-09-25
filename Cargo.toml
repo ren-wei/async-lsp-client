@@ -2,6 +2,14 @@
 name = "async-lsp-client"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "The client used to connect to the LSP server."
+homepage = "https://github.com/ren-wei/async-lsp-client"
+documentation = "https://github.com/ren-wei/async-lsp-client"
+repository = "https://github.com/ren-wei/async-lsp-client"
+readme = "README.md"
+keywords = ["client", "lsp", "languageservice", "languageserver"]
+categories = ["development-tools"]
 
 [dependencies]
 tokio = { version = "1.35.1", features = ["io-util", "rt", "process"] }
