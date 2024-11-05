@@ -8,13 +8,15 @@ use serde_json::{Map, Value};
 use tower_lsp::jsonrpc::{Request, Response};
 use tracing::debug;
 
-pub async fn get_message(stdout: &mut ChildStdout) -> Message {
+pub async fn get_message(stdout: &mut ChildStdout) -> Option<Message> {
     let mut headers = Vec::new();
     let mut content_length: Option<usize> = None;
 
     loop {
         let mut byte = [0];
-        stdout.read_exact(&mut byte).await.unwrap();
+        if stdout.read_exact(&mut byte).await.is_err() {
+            return None;
+        }
         headers.push(byte[0]);
 
         // Check if we've reached the end of the headers (double CRLF)
@@ -46,15 +48,15 @@ pub async fn get_message(stdout: &mut ChildStdout) -> Message {
     if value.contains_key("method") {
         if value.contains_key("id") {
             let request: Request = serde_json::from_value(Value::Object(value)).unwrap();
-            Message::Request(request)
+            Some(Message::Request(request))
         } else {
             let notification: NotificationMessage =
                 serde_json::from_value(Value::Object(value)).unwrap();
-            Message::Notification(notification)
+            Some(Message::Notification(notification))
         }
     } else {
         let response: Response = serde_json::from_value(Value::Object(value)).unwrap();
-        Message::Response(response)
+        Some(Message::Response(response))
     }
 }
 

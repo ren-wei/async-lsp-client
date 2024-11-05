@@ -124,15 +124,21 @@ impl LspServer {
     pub fn new<S, I>(program: S, args: I) -> (LspServer, Receiver<ServerMessage>)
     where
         S: AsRef<OsStr>,
-        I: IntoIterator<Item = S>,
+        I: IntoIterator<Item = S> + Clone,
     {
         let child = match Command::new(program)
-            .args(args)
+            .args(args.clone())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
         {
-            Err(err) => panic!("Couldn't spawn: {:?}", err),
+            Err(err) => panic!(
+                "Couldn't spawn: {:?} in {:?}",
+                err,
+                args.into_iter()
+                    .map(|v| v.as_ref().to_str().map(|v| v.to_string()))
+                    .collect::<Vec<_>>()
+            ),
             Ok(child) => child,
         };
         let stdin = child.stdin.unwrap();
@@ -281,26 +287,30 @@ async fn message_loop(
 ) {
     loop {
         let msg = message::get_message(stdout).await;
-        match msg {
-            Message::Notification(msg) => {
-                tx.send(ServerMessage::Notification(msg)).await.unwrap();
-            }
-            Message::Request(req) => {
-                tx.send(ServerMessage::Request(req)).await.unwrap();
-            }
-            Message::Response(res) => {
-                let mut channel_map = channel_map.write().await;
-                let id = res.id().clone();
-                if let Some(tx) = channel_map.get(&id) {
-                    let result = tx.send(res).await;
-                    if let Err(err) = result {
-                        if cfg!(feature = "tracing") {
-                            warn!("send error: {:?}", err);
+        if let Some(msg) = msg {
+            match msg {
+                Message::Notification(msg) => {
+                    tx.send(ServerMessage::Notification(msg)).await.unwrap();
+                }
+                Message::Request(req) => {
+                    tx.send(ServerMessage::Request(req)).await.unwrap();
+                }
+                Message::Response(res) => {
+                    let mut channel_map = channel_map.write().await;
+                    let id = res.id().clone();
+                    if let Some(tx) = channel_map.get(&id) {
+                        let result = tx.send(res).await;
+                        if let Err(err) = result {
+                            if cfg!(feature = "tracing") {
+                                warn!("send error: {:?}", err);
+                            }
                         }
+                        channel_map.remove(&id);
                     }
-                    channel_map.remove(&id);
                 }
             }
+        } else {
+            break;
         }
     }
 }
