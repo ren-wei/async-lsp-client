@@ -1,6 +1,6 @@
 [package]
 name = "async-lsp-client"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "The client used to connect to the LSP server."
