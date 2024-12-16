@@ -197,8 +197,8 @@ impl LspServer {
         let mut token = CancellationToken::new(Arc::clone(&notify));
         let stdin = Arc::clone(&self.stdin);
         let cancel = tokio::spawn(async move {
-            let mut stdin = stdin.write().await;
             notify.notified().await;
+            let mut stdin = stdin.write().await;
             send_message(
                 json!({
                     "jsonrpc": "2.0",
