@@ -59,37 +59,40 @@ The `rx` is used to receive messages from the server. Usually, the message is re
 let server_ = server.clone(); // Clone the server is used to move.
 tokio::spawn(async move {
     loop {
-        let message = rx.recv().await.unwrap();
-        // Process messages
-        match message {
-            ServerMessage::Notification(_) => {},
-            // For requests, you need to send a response
-            ServerMessage::Request(req) => {
-                let id = req.id().unwrap().clone();
-                match req.method() {
-                    WorkspaceConfiguration::METHOD => {
-                        server_.send_response::<WorkspaceConfiguration>(id, vec![])
-                            .await
-                    }
-                    WorkDoneProgressCreate::METHOD => {
-                        server_
-                            .send_response::<WorkDoneProgressCreate>(id, ())
-                            .await;
-                    }
-                    _ => {
-                        server_
-                            .send_error_response(
-                                id,
-                                jsonrpc::Error {
-                                    code: jsonrpc::ErrorCode::MethodNotFound,
-                                    message: std::borrow::Cow::Borrowed("Method Not Found"),
-                                    data: req.params().cloned(),
-                                },
-                            )
-                            .await;
+        if let Some(message) = rx.recv().await {
+            // Process messages
+            match message {
+                ServerMessage::Notification(_) => {},
+                // For requests, you need to send a response
+                ServerMessage::Request(req) => {
+                    let id = req.id().unwrap().clone();
+                    match req.method() {
+                        WorkspaceConfiguration::METHOD => {
+                            server_.send_response::<WorkspaceConfiguration>(id, vec![])
+                                .await
+                        }
+                        WorkDoneProgressCreate::METHOD => {
+                            server_
+                                .send_response::<WorkDoneProgressCreate>(id, ())
+                                .await;
+                        }
+                        _ => {
+                            server_
+                                .send_error_response(
+                                    id,
+                                    jsonrpc::Error {
+                                        code: jsonrpc::ErrorCode::MethodNotFound,
+                                        message: std::borrow::Cow::Borrowed("Method Not Found"),
+                                        data: req.params().cloned(),
+                                    },
+                                )
+                                .await;
+                        }
                     }
                 }
             }
+        } else {
+            break;
         }
     }
 });
