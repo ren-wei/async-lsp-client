@@ -99,7 +99,7 @@ use tokio::{
     process::{ChildStdin, ChildStdout, Command},
     sync::{
         mpsc::{self, Receiver, Sender},
-        Notify, RwLock,
+        Mutex, Notify,
     },
 };
 use tower_lsp::{
@@ -114,10 +114,10 @@ use tower_lsp::{
 
 #[derive(Clone)]
 pub struct LspServer {
-    count: Arc<RwLock<i64>>,
-    state: Arc<RwLock<ClientState>>,
-    stdin: Arc<RwLock<ChildStdin>>,
-    channel_map: Arc<RwLock<HashMap<Id, Sender<Response>>>>,
+    count: Arc<Mutex<i64>>,
+    state: Arc<Mutex<ClientState>>,
+    stdin: Arc<Mutex<ChildStdin>>,
+    channel_map: Arc<Mutex<HashMap<Id, Sender<Response>>>>,
 }
 
 impl LspServer {
@@ -144,7 +144,7 @@ impl LspServer {
         let stdin = child.stdin.unwrap();
         let mut stdout = child.stdout.unwrap();
 
-        let channel_map = Arc::new(RwLock::new(HashMap::<Id, Sender<Response>>::new()));
+        let channel_map = Arc::new(Mutex::new(HashMap::<Id, Sender<Response>>::new()));
         let channel_map_ = Arc::clone(&channel_map);
 
         let (tx, rx) = mpsc::channel(16);
@@ -152,17 +152,20 @@ impl LspServer {
         tokio::spawn(async move { message_loop(&mut stdout, channel_map_, tx).await });
         (
             LspServer {
-                count: Arc::new(RwLock::new(0)),
-                state: Arc::new(RwLock::new(ClientState::Uninitialized)),
-                stdin: Arc::new(RwLock::new(stdin)),
+                count: Arc::new(Mutex::new(0)),
+                state: Arc::new(Mutex::new(ClientState::Uninitialized)),
+                stdin: Arc::new(Mutex::new(stdin)),
                 channel_map,
             },
             rx,
         )
     }
 
-    pub async fn initialize(&self, params: InitializeParams) -> InitializeResult {
-        *self.state.write().await = ClientState::Initializing;
+    pub async fn initialize(
+        &self,
+        params: InitializeParams,
+    ) -> Result<InitializeResult, jsonrpc::Error> {
+        *self.state.lock().await = ClientState::Initializing;
         let initialize_result = self.send_request::<Initialize>(params).await;
         initialize_result
     }
@@ -170,17 +173,17 @@ impl LspServer {
     pub async fn initialized(&self) {
         self.send_notification::<Initialized>(InitializedParams {})
             .await;
-        *self.state.write().await = ClientState::Initialized;
+        *self.state.lock().await = ClientState::Initialized;
     }
 
-    pub async fn send_request<R>(&self, params: R::Params) -> R::Result
+    pub async fn send_request<R>(&self, params: R::Params) -> Result<R::Result, jsonrpc::Error>
     where
         R: lsp_types::request::Request,
     {
-        let mut count = self.count.write().await;
+        let mut count = self.count.lock().await;
         *count += 1;
         let id = *count;
-        let mut stdin = self.stdin.write().await;
+        let mut stdin = self.stdin.lock().await;
         send_message(
             json!({
                 "jsonrpc": "2.0",
@@ -198,7 +201,7 @@ impl LspServer {
         let stdin = Arc::clone(&self.stdin);
         let cancel = tokio::spawn(async move {
             notify.notified().await;
-            let mut stdin = stdin.write().await;
+            let mut stdin = stdin.lock().await;
             send_message(
                 json!({
                     "jsonrpc": "2.0",
@@ -214,21 +217,25 @@ impl LspServer {
 
         let (tx, mut rx) = mpsc::channel::<Response>(1);
 
-        self.channel_map.write().await.insert(Id::Number(id), tx);
+        self.channel_map.lock().await.insert(Id::Number(id), tx);
 
         let response = rx.recv().await.unwrap();
 
         token.finish();
         cancel.abort();
 
-        serde_json::from_value(response.result().unwrap().to_owned()).unwrap()
+        if response.is_ok() {
+            Ok(serde_json::from_value(response.result().unwrap().to_owned()).unwrap())
+        } else {
+            Err(response.error().unwrap().to_owned())
+        }
     }
 
     pub async fn send_response<R>(&self, id: Id, result: R::Result)
     where
         R: lsp_types::request::Request,
     {
-        let mut stdin = self.stdin.write().await;
+        let mut stdin = self.stdin.lock().await;
         send_message(
             json!({
                 "jsonrpc": "2.0",
@@ -241,7 +248,7 @@ impl LspServer {
     }
 
     pub async fn send_error_response(&self, id: Id, error: jsonrpc::Error) {
-        let mut stdin = self.stdin.write().await;
+        let mut stdin = self.stdin.lock().await;
         send_message(
             json!({
                 "jsonrpc": "2.0",
@@ -257,7 +264,7 @@ impl LspServer {
     where
         N: lsp_types::notification::Notification,
     {
-        let mut stdin = self.stdin.write().await;
+        let mut stdin = self.stdin.lock().await;
         send_message(
             json!({
                 "jsonrpc": "2.0",
@@ -269,20 +276,21 @@ impl LspServer {
         .await;
     }
 
-    pub async fn shutdown(&self) {
-        self.send_request::<Shutdown>(()).await;
-        *self.state.write().await = ClientState::ShutDown;
+    pub async fn shutdown(&self) -> Result<(), jsonrpc::Error> {
+        let result = self.send_request::<Shutdown>(()).await;
+        *self.state.lock().await = ClientState::ShutDown;
+        result
     }
 
     pub async fn exit(&self) {
         self.send_notification::<Exit>(()).await;
-        *self.state.write().await = ClientState::Exited;
+        *self.state.lock().await = ClientState::Exited;
     }
 }
 
 async fn message_loop(
     stdout: &mut ChildStdout,
-    channel_map: Arc<RwLock<HashMap<Id, Sender<Response>>>>,
+    channel_map: Arc<Mutex<HashMap<Id, Sender<Response>>>>,
     tx: Sender<ServerMessage>,
 ) {
     loop {
@@ -296,7 +304,7 @@ async fn message_loop(
                     tx.send(ServerMessage::Request(req)).await.unwrap();
                 }
                 Message::Response(res) => {
-                    let mut channel_map = channel_map.write().await;
+                    let mut channel_map = channel_map.lock().await;
                     let id = res.id().clone();
                     if let Some(tx) = channel_map.get(&id) {
                         let result = tx.send(res).await;
