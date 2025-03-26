@@ -180,21 +180,24 @@ impl LspServer {
     where
         R: lsp_types::request::Request,
     {
-        let mut count = self.count.lock().await;
-        *count += 1;
-        let id = *count;
-        let mut stdin = self.stdin.lock().await;
-        send_message(
-            json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": R::METHOD,
-                "params": params
-            }),
-            &mut stdin,
-        )
-        .await;
-        drop(stdin);
+        let id = {
+            let mut count = self.count.lock().await;
+            *count += 1;
+            *count
+        };
+        {
+            let mut stdin = self.stdin.lock().await;
+            send_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": R::METHOD,
+                    "params": params
+                }),
+                &mut stdin,
+            )
+            .await;
+        }
 
         let notify = Arc::new(Notify::new());
         let mut token = CancellationToken::new(Arc::clone(&notify));
@@ -217,7 +220,9 @@ impl LspServer {
 
         let (tx, mut rx) = mpsc::channel::<Response>(1);
 
-        self.channel_map.lock().await.insert(Id::Number(id), tx);
+        {
+            self.channel_map.lock().await.insert(Id::Number(id), tx);
+        }
 
         let response = rx.recv().await.unwrap();
 
