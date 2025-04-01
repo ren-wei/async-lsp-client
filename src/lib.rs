@@ -90,7 +90,15 @@ mod message;
 pub use message::NotificationMessage;
 use tracing::warn;
 
-use std::{collections::HashMap, ffi::OsStr, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    ffi::OsStr,
+    process::Stdio,
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc,
+    },
+};
 
 use cancellation::CancellationToken;
 use message::{send_message, Message};
@@ -112,12 +120,22 @@ use tower_lsp::{
     },
 };
 
-#[derive(Clone)]
 pub struct LspServer {
-    count: Arc<Mutex<i64>>,
+    count: AtomicI64,
     state: Arc<Mutex<ClientState>>,
     stdin: Arc<Mutex<ChildStdin>>,
     channel_map: Arc<Mutex<HashMap<Id, Sender<Response>>>>,
+}
+
+impl Clone for LspServer {
+    fn clone(&self) -> Self {
+        Self {
+            count: AtomicI64::new(self.count.load(Ordering::Relaxed)),
+            state: self.state.clone(),
+            stdin: self.stdin.clone(),
+            channel_map: self.channel_map.clone(),
+        }
+    }
 }
 
 impl LspServer {
@@ -152,7 +170,7 @@ impl LspServer {
         tokio::spawn(async move { message_loop(&mut stdout, channel_map_, tx).await });
         (
             LspServer {
-                count: Arc::new(Mutex::new(0)),
+                count: AtomicI64::new(0),
                 state: Arc::new(Mutex::new(ClientState::Uninitialized)),
                 stdin: Arc::new(Mutex::new(stdin)),
                 channel_map,
@@ -181,9 +199,8 @@ impl LspServer {
         R: lsp_types::request::Request,
     {
         let id = {
-            let mut count = self.count.lock().await;
-            *count += 1;
-            *count
+            self.count.fetch_add(1, Ordering::Relaxed);
+            self.count.load(Ordering::Relaxed)
         };
         {
             let mut stdin = self.stdin.lock().await;
